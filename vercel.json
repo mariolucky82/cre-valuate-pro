@@ -1,0 +1,22 @@
+{
+  "buildCommand": "echo 'Static files only'",
+  "installCommand": "echo 'No install needed'",
+  "outputDirectory": "public",
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "public/$1"
+    }
+  ],
+  "env": {
+    "NEXT_PUBLIC_API_BASE": "@api-base"
+  },
+  "envs": {
+    "preview": {
+      "NEXT_PUBLIC_API_BASE": "https://cre-valuate-pro-backend.onrender.com"
+    },
+    "production": {
+      "NEXT_PUBLIC_API_BASE": "https://cre-valuate-pro-backend.onrender.com"
+    }
+  }
+}
