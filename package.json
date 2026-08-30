@@ -5,8 +5,20 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "enhanced": "node server-enhanced.js",
+    "db:setup": "psql -f db-setup.sql"
   },
+  "keywords": [
+    "cre",
+    "real-estate",
+    "pdf",
+    "stripe",
+    "aws",
+    "puppeteer"
+  ],
+  "author": "",
+  "license": "MIT",
   "dependencies": {
     "@aws-sdk/client-s3": "^4.2.0",
     "body-parser": "^1.20.2",
@@ -20,5 +32,16 @@
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
+  },
+  "optionalDependencies": {
+    "pg": "^8.11.0",
+    "bcrypt": "^5.1.0",
+    "joi": "^17.11.0",
+    "express-rate-limit": "^7.1.0",
+    "@sentry/node": "^7.88.0"
+  },
+  "engines": {
+    "node": ">=16.0.0",
+    "npm": ">=8.0.0"
   }
 }
