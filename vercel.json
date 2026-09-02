@@ -1,22 +1,15 @@
 {
-  "buildCommand": "echo 'Static files only'",
-  "installCommand": "echo 'No install needed'",
-  "outputDirectory": "public",
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "public/$1"
-    }
+  "version": 2,
+  "builds": [
+    { "src": "package.json", "use": "@vercel/node" }
   ],
-  "env": {
-    "NEXT_PUBLIC_API_BASE": "@api-base"
-  },
-  "envs": {
-    "preview": {
-      "NEXT_PUBLIC_API_BASE": "https://cre-valuate-pro-backend.onrender.com"
-    },
-    "production": {
-      "NEXT_PUBLIC_API_BASE": "https://cre-valuate-pro-backend.onrender.com"
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/$1" }
+  ],
+  "functions": {
+    "api/**/*.js": {
+      "memory": 512,
+      "maxDuration": 10
     }
   }
 }
