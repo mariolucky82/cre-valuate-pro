@@ -1,12 +1,12 @@
 /**
  * Backend for CRE Valuate Pro demo (Render-ready).
- * - JWT demo auth
+ * - JWT auth backed by SQLite
  * - Stripe Checkout session creation (subscription)
- * - Stripe webhook verification -> mark user as paid
- * - Upload logos to S3 (server-side) and return S3 URL
+ * - Stripe webhook verification -> mark user as paid (persisted)
+ * - Upload logos to S3 (server-side) and return presigned S3 GET URL
  * - Generate PDF via Puppeteer (protected by subscription check)
  *
- * WARNING: Demo uses in-memory user store. Replace with a database for production.
+ * WARNING: Demo uses a local SQLite DB. For production use a managed DB.
  */
 
 require('dotenv').config();
@@ -16,9 +16,12 @@ const jwt = require('jsonwebtoken');
 const stripeLib = require('stripe');
 const multer = require('multer');
 const bodyParser = require('body-parser');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const path = require('path');
 const puppeteer = require('puppeteer');
+
+const db = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 4242;
@@ -28,10 +31,8 @@ const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
 app.use(cors({ origin: CLIENT_URL }));
 app.use(express.json());
 
-// In-memory demo user store
-const USERS = {
-  1: { id: 1, email: 'test@example.com', password: 'password', paid: false, logoKey: null }
-};
+// Initialize DB demo user
+db.ensureDemoUser();
 
 // Stripe and secrets
 const stripe = stripeLib(process.env.STRIPE_SECRET_KEY || 'sk_test_PLACEHOLDER');
@@ -51,16 +52,22 @@ const s3Client = new S3Client({
 // Multer (in-memory storage)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1024 * 1024 * 5 } }); // 5MB
 
-// Simple auth middleware
-function requireAuth(req, res, next) {
+// Simple auth middleware (checks token + loads user from DB)
+async function requireAuth(req, res, next) {
   const auth = req.headers.authorization;
   if (!auth || !auth.startsWith('Bearer ')) return res.status(401).json({ error: 'Missing auth token' });
   const token = auth.slice(7);
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    const user = USERS[payload.userId];
+    const user = db.getUserById(payload.userId);
     if (!user) return res.status(401).json({ error: 'Invalid user' });
-    req.user = user;
+    // Normalize fields
+    req.user = {
+      id: user.id,
+      email: user.email,
+      paid: Boolean(user.paid),
+      logoKey: user.logoKey
+    };
     next();
   } catch (err) {
     return res.status(401).json({ error: 'Invalid token' });
@@ -72,16 +79,24 @@ function requireAuth(req, res, next) {
 // Demo login
 app.post('/login', (req, res) => {
   const { email, password } = req.body;
-  const user = Object.values(USERS).find(u => u.email === email && u.password === password);
-  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+  const user = db.getUserByEmail(email);
+  if (!user || user.password !== password) return res.status(401).json({ error: 'Invalid credentials' });
   const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
   res.json({ token });
 });
 
 // Get user
-app.get('/me', requireAuth, (req, res) => {
+app.get('/me', requireAuth, async (req, res) => {
   const { id, email, paid, logoKey } = req.user;
-  const logoUrl = logoKey ? `https://${S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${logoKey}` : null;
+  let logoUrl = null;
+  if (logoKey && S3_BUCKET) {
+    try {
+      const cmd = new GetObjectCommand({ Bucket: S3_BUCKET, Key: logoKey });
+      logoUrl = await getSignedUrl(s3Client, cmd, { expiresIn: 60 * 60 }); // 1 hour
+    } catch (err) {
+      console.warn('Failed to generate signed logo URL', err.message);
+    }
+  }
   res.json({ id, email, paid, logoUrl });
 });
 
@@ -120,11 +135,11 @@ app.post('/webhook', bodyParser.raw({ type: 'application/json' }), (req, res) =>
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const clientRef = session.client_reference_id;
-    if (clientRef && USERS[clientRef]) {
-      USERS[clientRef].paid = true;
+    if (clientRef) {
+      db.setUserPaid(Number(clientRef), true);
       console.log(`User ${clientRef} marked as paid.`);
     } else {
-      console.log('checkout.session.completed received but no matching user.');
+      console.log('checkout.session.completed received but no client_reference_id.');
     }
   }
 
@@ -132,7 +147,7 @@ app.post('/webhook', bodyParser.raw({ type: 'application/json' }), (req, res) =>
   res.json({ received: true });
 });
 
-// Upload logo to S3 (server-side). Returns public URL (ACL: public-read).
+// Upload logo to S3 (server-side). Stores key in DB and returns presigned GET URL.
 app.post('/upload-logo', requireAuth, upload.single('logo'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   if (!S3_BUCKET) return res.status(500).json({ error: 'S3_BUCKET not configured' });
@@ -143,12 +158,14 @@ app.post('/upload-logo', requireAuth, upload.single('logo'), async (req, res) =>
       Bucket: S3_BUCKET,
       Key: key,
       Body: req.file.buffer,
-      ContentType: req.file.mimetype,
-      ACL: 'public-read' // NOTE: public-read makes object publicly accessible. Consider signed URLs for privacy.
+      ContentType: req.file.mimetype
     });
     await s3Client.send(put);
-    req.user.logoKey = key;
-    const url = `https://${S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
+    // Persist key for user
+    db.setUserLogoKey(req.user.id, key);
+    // Return a signed GET URL
+    const getCmd = new GetObjectCommand({ Bucket: S3_BUCKET, Key: key });
+    const url = await getSignedUrl(s3Client, getCmd, { expiresIn: 60 * 60 });
     res.json({ url });
   } catch (err) {
     console.error('S3 upload error', err);
@@ -160,7 +177,7 @@ app.post('/upload-logo', requireAuth, upload.single('logo'), async (req, res) =>
 app.get('/generate-pdf', requireAuth, async (req, res) => {
   if (!req.user.paid) return res.status(403).json({ error: 'Subscription required to export PDF' });
 
-  const logoUrl = req.user.logoKey ? `https://${S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${req.user.logoKey}` : null;
+  const logoUrl = req.user.logoKey && S3_BUCKET ? `https://${S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${req.user.logoKey}` : null;
   const title = req.query.title ? String(req.query.title).slice(0, 200) : 'Investment Memo';
 
   const html = `
