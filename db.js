@@ -8,25 +8,45 @@ const dbPath = path.join(dataDir, 'data.db');
 
 const db = new Database(dbPath);
 
-// Users: id, email, password, paid (0/1), logoKey
+// Users: id, email, password, paid (0/1), logoKey, stripeCustomerId, subscriptionId, subscriptionStatus
 db.prepare(`CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   email TEXT UNIQUE NOT NULL,
   password TEXT NOT NULL,
   paid INTEGER DEFAULT 0,
-  logoKey TEXT
+  logoKey TEXT,
+  stripeCustomerId TEXT,
+  subscriptionId TEXT,
+  subscriptionStatus TEXT
 )`).run();
 
+// Migration helper: add columns if missing (for older DBs)
+function ensureColumn(table, column, definition) {
+  const info = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!info.find(i => i.name === column)) {
+    db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+  }
+}
+
+ensureColumn('users', 'logoKey', 'TEXT');
+ensureColumn('users', 'stripeCustomerId', 'TEXT');
+ensureColumn('users', 'subscriptionId', 'TEXT');
+ensureColumn('users', 'subscriptionStatus', 'TEXT');
+
 function getUserById(id) {
-  return db.prepare('SELECT id, email, password, paid, logoKey FROM users WHERE id = ?').get(id);
+  return db.prepare('SELECT id, email, password, paid, logoKey, stripeCustomerId, subscriptionId, subscriptionStatus FROM users WHERE id = ?').get(id);
 }
 
 function getUserByEmail(email) {
-  return db.prepare('SELECT id, email, password, paid, logoKey FROM users WHERE email = ?').get(email);
+  return db.prepare('SELECT id, email, password, paid, logoKey, stripeCustomerId, subscriptionId, subscriptionStatus FROM users WHERE email = ?').get(email);
 }
 
-function createUser(email, password) {
-  const info = db.prepare('INSERT INTO users (email, password) VALUES (?,?)').run(email, password);
+function getUserByStripeCustomerId(stripeCustomerId) {
+  return db.prepare('SELECT id, email, password, paid, logoKey, stripeCustomerId, subscriptionId, subscriptionStatus FROM users WHERE stripeCustomerId = ?').get(stripeCustomerId);
+}
+
+function createUser(email, password, stripeCustomerId = null) {
+  const info = db.prepare('INSERT INTO users (email, password, stripeCustomerId) VALUES (?,?,?)').run(email, password, stripeCustomerId);
   return getUserById(info.lastInsertRowid);
 }
 
@@ -36,6 +56,14 @@ function setUserPaid(id, paid) {
 
 function setUserLogoKey(id, key) {
   db.prepare('UPDATE users SET logoKey = ? WHERE id = ?').run(key, id);
+}
+
+function setUserStripeCustomerId(id, stripeCustomerId) {
+  db.prepare('UPDATE users SET stripeCustomerId = ? WHERE id = ?').run(stripeCustomerId, id);
+}
+
+function setUserSubscription(id, subscriptionId, subscriptionStatus) {
+  db.prepare('UPDATE users SET subscriptionId = ?, subscriptionStatus = ? WHERE id = ?').run(subscriptionId, subscriptionStatus, id);
 }
 
 function ensureDemoUser() {
@@ -50,8 +78,11 @@ module.exports = {
   db,
   getUserById,
   getUserByEmail,
+  getUserByStripeCustomerId,
   createUser,
   setUserPaid,
   setUserLogoKey,
+  setUserStripeCustomerId,
+  setUserSubscription,
   ensureDemoUser
 };

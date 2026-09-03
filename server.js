@@ -20,6 +20,7 @@ const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/clien
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const path = require('path');
 const puppeteer = require('puppeteer');
+const bcrypt = require('bcryptjs');
 
 const db = require('./db');
 
@@ -66,7 +67,8 @@ async function requireAuth(req, res, next) {
       id: user.id,
       email: user.email,
       paid: Boolean(user.paid),
-      logoKey: user.logoKey
+      logoKey: user.logoKey,
+      stripeCustomerId: user.stripeCustomerId
     };
     next();
   } catch (err) {
@@ -76,11 +78,34 @@ async function requireAuth(req, res, next) {
 
 // Routes
 
-// Demo login
+// Register
+app.post('/register', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+  if (db.getUserByEmail(email)) return res.status(409).json({ error: 'User already exists' });
+
+  try {
+    const hashed = bcrypt.hashSync(password, 10);
+    // Create Stripe customer
+    let customer = null;
+    if (process.env.STRIPE_SECRET_KEY) {
+      customer = await stripe.customers.create({ email });
+    }
+    const user = db.createUser(email, hashed, customer ? customer.id : null);
+    const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token });
+  } catch (err) {
+    console.error('register error', err);
+    res.status(500).json({ error: 'Failed to register' });
+  }
+});
+
+// Demo login (now supports hashed passwords)
 app.post('/login', (req, res) => {
   const { email, password } = req.body;
   const user = db.getUserByEmail(email);
-  if (!user || user.password !== password) return res.status(401).json({ error: 'Invalid credentials' });
+  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+  if (!bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: 'Invalid credentials' });
   const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
   res.json({ token });
 });
@@ -100,18 +125,28 @@ app.get('/me', requireAuth, async (req, res) => {
   res.json({ id, email, paid, logoUrl });
 });
 
-// Create Stripe Checkout Session (link client_reference_id to user)
+// Create Stripe Checkout Session (link customer to user)
 app.post('/create-checkout-session', requireAuth, async (req, res) => {
   try {
-    const session = await stripe.checkout.sessions.create({
+    // Ensure user has a Stripe customer
+    let customerId = req.user.stripeCustomerId;
+    if (!customerId && process.env.STRIPE_SECRET_KEY) {
+      const customer = await stripe.customers.create({ email: req.user.email });
+      db.setUserStripeCustomerId(req.user.id, customer.id);
+      customerId = customer.id;
+    }
+
+    const sessionParams = {
       payment_method_types: ['card'],
       mode: 'subscription',
       line_items: [{ price: PRICE_ID, quantity: 1 }],
       success_url: `${CLIENT_URL}?checkoutSuccess=true`,
       cancel_url: `${CLIENT_URL}?checkoutCanceled=true`,
       client_reference_id: String(req.user.id)
-    });
-    // Modern Stripe returns a url you can redirect to
+    };
+    if (customerId) sessionParams.customer = customerId;
+
+    const session = await stripe.checkout.sessions.create(sessionParams);
     res.json({ sessionId: session.id, url: session.url });
   } catch (err) {
     console.error('create-checkout-session error', err);
@@ -120,7 +155,7 @@ app.post('/create-checkout-session', requireAuth, async (req, res) => {
 });
 
 // Stripe webhook - raw body required
-app.post('/webhook', bodyParser.raw({ type: 'application/json' }), (req, res) => {
+app.post('/webhook', bodyParser.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_PLACEHOLDER';
   let event;
@@ -131,19 +166,77 @@ app.post('/webhook', bodyParser.raw({ type: 'application/json' }), (req, res) =>
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Handle checkout.session.completed
-  if (event.type === 'checkout.session.completed') {
-    const session = event.data.object;
-    const clientRef = session.client_reference_id;
-    if (clientRef) {
-      db.setUserPaid(Number(clientRef), true);
-      console.log(`User ${clientRef} marked as paid.`);
-    } else {
-      console.log('checkout.session.completed received but no client_reference_id.');
+  try {
+    // Handle checkout.session.completed
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const clientRef = session.client_reference_id;
+      const customer = session.customer || session.customer_details?.id;
+      const subscription = session.subscription;
+
+      if (clientRef) {
+        // Update user's subscription info
+        if (subscription) db.setUserSubscription(Number(clientRef), subscription, 'active');
+        if (customer) db.setUserStripeCustomerId(Number(clientRef), customer);
+        db.setUserPaid(Number(clientRef), true);
+        console.log(`User ${clientRef} marked as paid via checkout.session.completed.`);
+      } else if (customer) {
+        // Try to look up user by Stripe customer id
+        const user = db.getUserByStripeCustomerId(customer);
+        if (user) {
+          if (subscription) db.setUserSubscription(user.id, subscription, 'active');
+          db.setUserPaid(user.id, true);
+          console.log(`User ${user.id} marked as paid via webhook (customer).`);
+        }
+      }
     }
+
+    // invoice.payment_succeeded -> mark paid
+    if (event.type === 'invoice.payment_succeeded') {
+      const invoice = event.data.object;
+      const customer = invoice.customer;
+      if (customer) {
+        const user = db.getUserByStripeCustomerId(customer);
+        if (user) {
+          db.setUserPaid(user.id, true);
+          console.log(`User ${user.id} marked as paid via invoice.payment_succeeded.`);
+        }
+      }
+    }
+
+    // customer.subscription.updated
+    if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.created') {
+      const subscription = event.data.object;
+      const customer = subscription.customer;
+      const status = subscription.status;
+      if (customer) {
+        const user = db.getUserByStripeCustomerId(customer);
+        if (user) {
+          db.setUserSubscription(user.id, subscription.id, status);
+          db.setUserPaid(user.id, status === 'active' || status === 'trialing');
+          console.log(`User ${user.id} subscription updated: ${status}`);
+        }
+      }
+    }
+
+    // customer.subscription.deleted
+    if (event.type === 'customer.subscription.deleted') {
+      const subscription = event.data.object;
+      const customer = subscription.customer;
+      if (customer) {
+        const user = db.getUserByStripeCustomerId(customer);
+        if (user) {
+          db.setUserSubscription(user.id, subscription.id, 'canceled');
+          db.setUserPaid(user.id, false);
+          console.log(`User ${user.id} subscription canceled.`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error handling webhook event', err);
+    // Do not fail the webhook entirely; acknowledge to avoid retries if we've partially handled
   }
 
-  // Optionally handle other events (invoice.payment_failed, customer.subscription.deleted, etc.)
   res.json({ received: true });
 });
 
