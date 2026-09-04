@@ -5,8 +5,8 @@ services:
     repo: https://github.com/mariolucky82/cre-valuate-pro
     branch: chore/vercel-deploy-setup
     plan: standard
-    buildCommand: "npm install"
-    startCommand: "npm start"
+    buildCommand: "npm ci && npm run build"
+    startCommand: "npm run start"
     envVars: []
     autoDeploy: true
     regions:
