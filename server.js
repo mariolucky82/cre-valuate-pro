@@ -5,6 +5,7 @@
  * - Stripe webhook verification -> mark user as paid (persisted)
  * - Upload logos to S3 (server-side) and return presigned S3 GET URL
  * - Generate PDF via Puppeteer (protected by subscription check)
+ * - Serve static frontend from /public
  *
  * WARNING: Demo uses a local SQLite DB. For production use a managed DB.
  */
@@ -31,6 +32,9 @@ const PORT = process.env.PORT || 4242;
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
 app.use(cors({ origin: CLIENT_URL }));
 app.use(express.json());
+
+// Serve static files from public folder
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Initialize DB demo user
 db.ensureDemoUser();
@@ -331,8 +335,13 @@ app.get('/generate-pdf', requireAuth, async (req, res) => {
   }
 });
 
-// Health
-app.get('/', (req, res) => res.send('CRE Valuate Pro backend running'));
+// Fallback to index.html for SPA routing
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Health check (optional, before fallback)
+// app.get('/', (req, res) => res.send('CRE Valuate Pro backend running'));
 
 // Start
 app.listen(PORT, () => {
