@@ -103,14 +103,8 @@
       transition: background 0.2s;
     }
 
-    button:hover {
-      background: #5568d3;
-    }
-
-    button:disabled {
-      background: #cbd5e1;
-      cursor: not-allowed;
-    }
+    button:hover { background: #5568d3; }
+    button:disabled { background: #cbd5e1; cursor: not-allowed; }
 
     .toggle-auth {
       text-align: center;
@@ -180,18 +174,14 @@
       margin-top: 16px;
     }
 
-    .button-group button {
-      flex: 1;
-    }
+    .button-group button { flex: 1; }
 
     .button-secondary {
       background: #e2e8f0;
       color: #0f172a;
     }
 
-    .button-secondary:hover {
-      background: #cbd5e1;
-    }
+    .button-secondary:hover { background: #cbd5e1; }
 
     .pricing-info {
       background: #f0f4ff;
@@ -214,11 +204,7 @@
       margin-right: 6px;
     }
 
-    @keyframes spin {
-      to {
-        transform: rotate(360deg);
-      }
-    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -228,11 +214,9 @@
       <p>Generate branded investment memos</p>
     </div>
 
-    <!-- AUTH SECTION -->
     <div class="auth-section active">
       <div id="authMessage"></div>
 
-      <!-- LOGIN TAB -->
       <div id="loginForm">
         <div class="form-group">
           <label>Email</label>
@@ -248,7 +232,6 @@
         </div>
       </div>
 
-      <!-- REGISTER TAB -->
       <div id="registerForm" style="display: none">
         <div class="form-group">
           <label>Email</label>
@@ -269,19 +252,15 @@
       </div>
     </div>
 
-    <!-- DASHBOARD SECTION -->
     <div class="dashboard-section">
       <div id="dashMessage"></div>
 
       <div class="user-info">
-        <p>
-          Logged in as <strong id="userEmail"></strong>
-        </p>
+        <p>Logged in as <strong id="userEmail"></strong></p>
         <p id="paidStatus" style="color: #059669; font-weight: 600;"></p>
         <div id="logoSection"></div>
       </div>
 
-      <!-- PDF GENERATION FORM -->
       <div id="pdfSection">
         <div class="form-group">
           <label>Memo Title</label>
@@ -290,11 +269,8 @@
         <button onclick="generatePDF()">📄 Generate PDF</button>
       </div>
 
-      <!-- LOGO UPLOAD & SUBSCRIPTION -->
       <div id="subscriptionSection">
-        <div class="pricing-info">
-          💎 Subscribe to unlock PDF exports with your branding
-        </div>
+        <div class="pricing-info">💎 Subscribe to unlock PDF exports with your branding</div>
         <div class="form-group">
           <label>Upload Logo</label>
           <input type="file" id="logoFile" accept="image/*" />
@@ -310,13 +286,10 @@
   </div>
 
   <script>
-    const API_URL = window.location.origin; // Auto-detect backend URL
-
-    // ==== AUTH STATE ====
+    const API_URL = window.location.origin;
     let token = localStorage.getItem('token');
     let user = null;
 
-    // ==== INIT ====
     window.addEventListener('DOMContentLoaded', () => {
       if (token) {
         showDashboard();
@@ -326,7 +299,6 @@
       }
     });
 
-    // ==== AUTH FLOW ====
     async function login() {
       const email = document.getElementById('loginEmail').value.trim();
       const password = document.getElementById('loginPassword').value.trim();
@@ -399,12 +371,14 @@
     }
 
     function toggleAuthMode() {
-      document.getElementById('loginForm').style.display = document.getElementById('loginForm').style.display === 'none' ? 'block' : 'none';
-      document.getElementById('registerForm').style.display = document.getElementById('registerForm').style.display === 'none' ? 'block' : 'none';
+      const login = document.getElementById('loginForm');
+      const register = document.getElementById('registerForm');
+      const isLoginVisible = login.style.display !== 'none';
+      login.style.display = isLoginVisible ? 'none' : 'block';
+      register.style.display = isLoginVisible ? 'block' : 'none';
       document.getElementById('authMessage').innerHTML = '';
     }
 
-    // ==== DASHBOARD ====
     async function loadUser() {
       try {
         const res = await fetch(`${API_URL}/me`, {
@@ -463,12 +437,12 @@
 
     async function generatePDF() {
       const title = document.getElementById('memoTitle').value || 'Investment Memo';
-      if (!user.paid) {
+      if (!user || !user.paid) {
         showDashMessage('Subscription required', 'error');
         return;
       }
 
-      const btn = event.target;
+      const btn = document.querySelector('#pdfSection button');
       btn.disabled = true;
       btn.innerHTML = '<span class="loading"></span>Generating...';
 
@@ -491,7 +465,7 @@
         showDashMessage(err.message, 'error');
       } finally {
         btn.disabled = false;
-        btn.textContent = '📄 Generate PDF';
+        btn.innerHTML = '📄 Generate PDF';
       }
     }
 
@@ -514,7 +488,6 @@
       }
     }
 
-    // ==== UI HELPERS ====
     function showAuth() {
       document.querySelector('.auth-section').classList.add('active');
       document.querySelector('.dashboard-section').classList.remove('active');

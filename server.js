@@ -31,7 +31,7 @@ const PORT = process.env.PORT || 4242;
 // CORS — restrict to actual frontend origin in production
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
 app.use(cors({ origin: CLIENT_URL }));
-app.use('/webhook', bodyParser.raw({ type: 'application/json' }));
+app.use(bodyParser.raw({ type: 'application/json' }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -43,7 +43,7 @@ db.ensureDemoUser();
 
 // Stripe and secrets
 const stripe = stripeLib(process.env.STRIPE_SECRET_KEY || 'sk_test_PLACEHOLDER');
-const JWT_SECRET = process.env.JWT_SECRET || 'replace_this_secret';
+const JWT_SECRET = process.env.JWT_SECRET || 'demo-secret-key-change-me';
 const PRICE_ID = process.env.PRICE_ID || 'price_xxx';
 
 // S3 client (requires AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET in env)
@@ -68,7 +68,6 @@ async function requireAuth(req, res, next) {
     const payload = jwt.verify(token, JWT_SECRET);
     const user = db.getUserById(payload.userId);
     if (!user) return res.status(401).json({ error: 'Invalid user' });
-    // Normalize fields
     req.user = {
       id: user.id,
       email: user.email,
@@ -92,9 +91,8 @@ app.post('/register', async (req, res) => {
 
   try {
     const hashed = bcrypt.hashSync(password, 10);
-    // Create Stripe customer
     let customer = null;
-    if (process.env.STRIPE_SECRET_KEY) {
+    if (process.env.STRIPE_SECRET_KEY && process.env.STRIPE_SECRET_KEY !== 'sk_test_your_real_key_here') {
       customer = await stripe.customers.create({ email });
     }
     const user = db.createUser(email, hashed, customer ? customer.id : null);
@@ -106,7 +104,7 @@ app.post('/register', async (req, res) => {
   }
 });
 
-// Demo login (now supports hashed passwords)
+// Demo login
 app.post('/login', (req, res) => {
   const { email, password } = req.body;
   const user = db.getUserByEmail(email);
@@ -123,7 +121,7 @@ app.get('/me', requireAuth, async (req, res) => {
   if (logoKey && S3_BUCKET) {
     try {
       const cmd = new GetObjectCommand({ Bucket: S3_BUCKET, Key: logoKey });
-      logoUrl = await getSignedUrl(s3Client, cmd, { expiresIn: 60 * 60 }); // 1 hour
+      logoUrl = await getSignedUrl(s3Client, cmd, { expiresIn: 60 * 60 });
     } catch (err) {
       console.warn('Failed to generate signed logo URL', err.message);
     }
@@ -131,15 +129,18 @@ app.get('/me', requireAuth, async (req, res) => {
   res.json({ id, email, paid, logoUrl });
 });
 
-// Create Stripe Checkout Session (link customer to user)
+// Create Stripe Checkout Session
 app.post('/create-checkout-session', requireAuth, async (req, res) => {
   try {
-    // Ensure user has a Stripe customer
     let customerId = req.user.stripeCustomerId;
-    if (!customerId && process.env.STRIPE_SECRET_KEY) {
+    if (!customerId && process.env.STRIPE_SECRET_KEY && process.env.STRIPE_SECRET_KEY !== 'sk_test_your_real_key_here') {
       const customer = await stripe.customers.create({ email: req.user.email });
       db.setUserStripeCustomerId(req.user.id, customer.id);
       customerId = customer.id;
+    }
+
+    if (!process.env.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY === 'sk_test_your_real_key_here') {
+      return res.status(400).json({ error: 'Stripe is not configured. Add Stripe keys to .env.' });
     }
 
     const sessionParams = {
@@ -160,7 +161,7 @@ app.post('/create-checkout-session', requireAuth, async (req, res) => {
   }
 });
 
-// Stripe webhook - raw body required
+// Stripe webhook
 app.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_PLACEHOLDER';
@@ -173,7 +174,6 @@ app.post('/webhook', async (req, res) => {
   }
 
   try {
-    // Handle checkout.session.completed
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
       const clientRef = session.client_reference_id;
@@ -181,13 +181,11 @@ app.post('/webhook', async (req, res) => {
       const subscription = session.subscription;
 
       if (clientRef) {
-        // Update user's subscription info
         if (subscription) db.setUserSubscription(Number(clientRef), subscription, 'active');
         if (customer) db.setUserStripeCustomerId(Number(clientRef), customer);
         db.setUserPaid(Number(clientRef), true);
         console.log(`User ${clientRef} marked as paid via checkout.session.completed.`);
       } else if (customer) {
-        // Try to look up user by Stripe customer id
         const user = db.getUserByStripeCustomerId(customer);
         if (user) {
           if (subscription) db.setUserSubscription(user.id, subscription, 'active');
@@ -197,7 +195,6 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    // invoice.payment_succeeded -> mark paid
     if (event.type === 'invoice.payment_succeeded') {
       const invoice = event.data.object;
       const customer = invoice.customer;
@@ -210,7 +207,6 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    // customer.subscription.updated
     if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.created') {
       const subscription = event.data.object;
       const customer = subscription.customer;
@@ -225,7 +221,6 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    // customer.subscription.deleted
     if (event.type === 'customer.subscription.deleted') {
       const subscription = event.data.object;
       const customer = subscription.customer;
@@ -240,13 +235,12 @@ app.post('/webhook', async (req, res) => {
     }
   } catch (err) {
     console.error('Error handling webhook event', err);
-    // Do not fail the webhook entirely; acknowledge to avoid retries if we've partially handled
   }
 
   res.json({ received: true });
 });
 
-// Upload logo to S3 (server-side). Stores key in DB and returns presigned GET URL.
+// Upload logo to S3 
 app.post('/upload-logo', requireAuth, upload.single('logo'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   if (!S3_BUCKET) return res.status(500).json({ error: 'S3_BUCKET not configured' });
@@ -260,9 +254,7 @@ app.post('/upload-logo', requireAuth, upload.single('logo'), async (req, res) =>
       ContentType: req.file.mimetype
     });
     await s3Client.send(put);
-    // Persist key for user
     db.setUserLogoKey(req.user.id, key);
-    // Return a signed GET URL
     const getCmd = new GetObjectCommand({ Bucket: S3_BUCKET, Key: key });
     const url = await getSignedUrl(s3Client, getCmd, { expiresIn: 60 * 60 });
     res.json({ url });
@@ -272,7 +264,7 @@ app.post('/upload-logo', requireAuth, upload.single('logo'), async (req, res) =>
   }
 });
 
-// Generate PDF (protected & checks subscription). Renders minimal branded HTML including S3 logo URL.
+// Generate PDF
 app.get('/generate-pdf', requireAuth, async (req, res) => {
   if (!req.user.paid) return res.status(403).json({ error: 'Subscription required to export PDF' });
 
@@ -337,18 +329,17 @@ app.get('/generate-pdf', requireAuth, async (req, res) => {
   }
 });
 
-// Fallback to index.html for SPA routing
+// Fallback to index.html
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Health check (optional, before fallback)
-// app.get('/', (req, res) => res.send('CRE Valuate Pro backend running'));
-
-// Start
 app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
-  if (!process.env.STRIPE_SECRET_KEY) console.warn('Warning: STRIPE_SECRET_KEY not set');
-  if (!process.env.S3_BUCKET) console.warn('Warning: S3_BUCKET not set; uploads will fail');
+  if (!process.env.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY === 'sk_test_your_real_key_here') {
+    console.warn('Warning: Stripe is not configured. Add your real keys to .env to enable checkout/webhooks.');
+  }
+  if (!process.env.S3_BUCKET) {
+    console.warn('Warning: S3_BUCKET not set; uploads will fail until configured.');
+  }
 });
-
