@@ -31,7 +31,9 @@ const PORT = process.env.PORT || 4242;
 // CORS — restrict to actual frontend origin in production
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
 app.use(cors({ origin: CLIENT_URL }));
+app.use('/webhook', bodyParser.raw({ type: 'application/json' }));
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Serve static files from public folder
 app.use(express.static(path.join(__dirname, 'public')));
@@ -159,7 +161,7 @@ app.post('/create-checkout-session', requireAuth, async (req, res) => {
 });
 
 // Stripe webhook - raw body required
-app.post('/webhook', bodyParser.raw({ type: 'application/json' }), async (req, res) => {
+app.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_PLACEHOLDER';
   let event;
@@ -349,3 +351,4 @@ app.listen(PORT, () => {
   if (!process.env.STRIPE_SECRET_KEY) console.warn('Warning: STRIPE_SECRET_KEY not set');
   if (!process.env.S3_BUCKET) console.warn('Warning: S3_BUCKET not set; uploads will fail');
 });
+

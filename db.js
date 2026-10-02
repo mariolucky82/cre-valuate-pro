@@ -1,6 +1,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
+const bcrypt = require('bcryptjs');
 
 const dataDir = path.resolve(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
@@ -33,6 +34,12 @@ ensureColumn('users', 'stripeCustomerId', 'TEXT');
 ensureColumn('users', 'subscriptionId', 'TEXT');
 ensureColumn('users', 'subscriptionStatus', 'TEXT');
 
+function hashIfNeeded(password) {
+  if (!password || typeof password !== 'string') return password;
+  if (/^\$2[aby]\$\d{2}\$/.test(password)) return password;
+  return bcrypt.hashSync(password, 10);
+}
+
 function getUserById(id) {
   return db.prepare('SELECT id, email, password, paid, logoKey, stripeCustomerId, subscriptionId, subscriptionStatus FROM users WHERE id = ?').get(id);
 }
@@ -46,7 +53,7 @@ function getUserByStripeCustomerId(stripeCustomerId) {
 }
 
 function createUser(email, password, stripeCustomerId = null) {
-  const info = db.prepare('INSERT INTO users (email, password, stripeCustomerId) VALUES (?,?,?)').run(email, password, stripeCustomerId);
+  const info = db.prepare('INSERT INTO users (email, password, stripeCustomerId) VALUES (?,?,?)').run(email, hashIfNeeded(password), stripeCustomerId);
   return getUserById(info.lastInsertRowid);
 }
 
@@ -67,10 +74,17 @@ function setUserSubscription(id, subscriptionId, subscriptionStatus) {
 }
 
 function ensureDemoUser() {
-  // Ensure demo user with id=1 exists
-  const u = getUserById(1);
-  if (!u) {
-    createUser('test@example.com', 'password');
+  const email = 'test@example.com';
+  const demoPassword = 'password';
+  let user = getUserByEmail(email);
+
+  if (!user) {
+    createUser(email, demoPassword);
+    return;
+  }
+
+  if (!/^\$2[aby]\$\d{2}\$/.test(String(user.password))) {
+    db.prepare('UPDATE users SET password = ? WHERE id = ?').run(bcrypt.hashSync(demoPassword, 10), user.id);
   }
 }
 
