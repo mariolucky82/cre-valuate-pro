@@ -4,13 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CRE Valuate Pro — Investment Memo Generator</title>
+  <script src="/config.js"></script>
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-
+    * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
       background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -20,7 +16,6 @@
       justify-content: center;
       padding: 20px;
     }
-
     .container {
       background: white;
       border-radius: 12px;
@@ -29,48 +24,14 @@
       max-width: 500px;
       padding: 40px;
     }
-
-    .header {
-      text-align: center;
-      margin-bottom: 30px;
-    }
-
-    .header h1 {
-      font-size: 28px;
-      color: #0f172a;
-      margin-bottom: 8px;
-    }
-
-    .header p {
-      color: #64748b;
-      font-size: 14px;
-    }
-
-    .auth-section, .dashboard-section {
-      display: none;
-    }
-
-    .auth-section.active, .dashboard-section.active {
-      display: block;
-    }
-
-    .form-group {
-      margin-bottom: 16px;
-    }
-
-    label {
-      display: block;
-      font-size: 14px;
-      font-weight: 600;
-      margin-bottom: 6px;
-      color: #0f172a;
-    }
-
-    input[type='email'],
-    input[type='password'],
-    input[type='text'],
-    input[type='file'],
-    textarea {
+    .header { text-align: center; margin-bottom: 30px; }
+    .header h1 { font-size: 28px; color: #0f172a; margin-bottom: 8px; }
+    .header p { color: #64748b; font-size: 14px; }
+    .auth-section, .dashboard-section { display: none; }
+    .auth-section.active, .dashboard-section.active { display: block; }
+    .form-group { margin-bottom: 16px; }
+    label { display: block; font-size: 14px; font-weight: 600; margin-bottom: 6px; color: #0f172a; }
+    input[type='email'], input[type='password'], input[type='text'], input[type='file'], textarea {
       width: 100%;
       padding: 10px;
       border: 1px solid #e2e8f0;
@@ -79,17 +40,11 @@
       font-family: inherit;
       transition: border-color 0.2s;
     }
-
-    input[type='email']:focus,
-    input[type='password']:focus,
-    input[type='text']:focus,
-    input[type='file']:focus,
-    textarea:focus {
+    input[type='email']:focus, input[type='password']:focus, input[type='text']:focus, input[type='file']:focus, textarea:focus {
       outline: none;
       border-color: #667eea;
       box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
     }
-
     button {
       width: 100%;
       padding: 12px;
@@ -102,97 +57,22 @@
       cursor: pointer;
       transition: background 0.2s;
     }
-
     button:hover { background: #5568d3; }
     button:disabled { background: #cbd5e1; cursor: not-allowed; }
-
-    .toggle-auth {
-      text-align: center;
-      margin-top: 16px;
-      font-size: 14px;
-      color: #64748b;
-    }
-
-    .toggle-auth a {
-      color: #667eea;
-      text-decoration: none;
-      font-weight: 600;
-      cursor: pointer;
-    }
-
-    .error, .success {
-      padding: 12px;
-      border-radius: 6px;
-      margin-bottom: 16px;
-      font-size: 14px;
-    }
-
-    .error {
-      background: #fee2e2;
-      color: #991b1b;
-      border: 1px solid #fecaca;
-    }
-
-    .success {
-      background: #dcfce7;
-      color: #166534;
-      border: 1px solid #86efac;
-    }
-
-    .user-info {
-      background: #f8fafc;
-      padding: 16px;
-      border-radius: 6px;
-      margin-bottom: 20px;
-      font-size: 14px;
-    }
-
-    .user-info p {
-      color: #0f172a;
-      margin-bottom: 8px;
-    }
-
-    .user-info strong {
-      color: #0f172a;
-      font-weight: 600;
-    }
-
-    .logo-preview {
-      width: 60px;
-      height: 60px;
-      margin-top: 8px;
-      border-radius: 4px;
-      background: white;
-      border: 1px solid #e2e8f0;
-      object-fit: contain;
-      padding: 4px;
-    }
-
-    .button-group {
-      display: flex;
-      gap: 8px;
-      margin-top: 16px;
-    }
-
+    .toggle-auth { text-align: center; margin-top: 16px; font-size: 14px; color: #64748b; }
+    .toggle-auth a { color: #667eea; text-decoration: none; font-weight: 600; cursor: pointer; }
+    .error, .success { padding: 12px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
+    .error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+    .success { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+    .user-info { background: #f8fafc; padding: 16px; border-radius: 6px; margin-bottom: 20px; font-size: 14px; }
+    .user-info p { color: #0f172a; margin-bottom: 8px; }
+    .user-info strong { color: #0f172a; font-weight: 600; }
+    .logo-preview { width: 60px; height: 60px; margin-top: 8px; border-radius: 4px; background: white; border: 1px solid #e2e8f0; object-fit: contain; padding: 4px; }
+    .button-group { display: flex; gap: 8px; margin-top: 16px; }
     .button-group button { flex: 1; }
-
-    .button-secondary {
-      background: #e2e8f0;
-      color: #0f172a;
-    }
-
+    .button-secondary { background: #e2e8f0; color: #0f172a; }
     .button-secondary:hover { background: #cbd5e1; }
-
-    .pricing-info {
-      background: #f0f4ff;
-      padding: 12px;
-      border-radius: 6px;
-      margin-bottom: 20px;
-      font-size: 13px;
-      color: #3730a3;
-      border: 1px solid #c7d2fe;
-    }
-
+    .pricing-info { background: #f0f4ff; padding: 12px; border-radius: 6px; margin-bottom: 20px; font-size: 13px; color: #3730a3; border: 1px solid #c7d2fe; }
     .loading {
       display: inline-block;
       width: 12px;
@@ -203,7 +83,6 @@
       animation: spin 0.6s linear infinite;
       margin-right: 6px;
     }
-
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
@@ -286,7 +165,13 @@
   </div>
 
   <script>
-    const API_URL = window.location.origin;
+    const API_URL = (() => {
+      const configured = window.__API_BASE__ || (new URLSearchParams(window.location.search).get('apiBase'));
+      if (configured) return String(configured).replace(/\/$/, '');
+      if (window.location.hostname === 'localhost') return 'http://localhost:4242';
+      return 'https://cre-valuate-pro-backend.onrender.com';
+    })();
+
     let token = localStorage.getItem('token');
     let user = null;
 

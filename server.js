@@ -1,15 +1,3 @@
-/**
- * Backend for CRE Valuate Pro demo (Render-ready).
- * - JWT auth backed by SQLite
- * - Stripe Checkout session creation (subscription)
- * - Stripe webhook verification -> mark user as paid (persisted)
- * - Upload logos to S3 (server-side) and return presigned S3 GET URL
- * - Generate PDF via Puppeteer (protected by subscription check)
- * - Serve static frontend from /public
- *
- * WARNING: Demo uses a local SQLite DB. For production use a managed DB.
- */
-
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -26,27 +14,48 @@ const bcrypt = require('bcryptjs');
 const db = require('./db');
 
 const app = express();
-const PORT = process.env.PORT || 4242;
+const PORT = Number(process.env.PORT || 4242);
 
-// CORS — restrict to actual frontend origin in production
-const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
-app.use(cors({ origin: CLIENT_URL }));
-app.use(bodyParser.raw({ type: 'application/json' }));
-app.use(express.json());
+const normalizeOrigin = (value) => {
+  if (!value) return null;
+  return value.trim().replace(/\/$/, '');
+};
+
+const CLIENT_URL = normalizeOrigin(process.env.CLIENT_URL || 'http://localhost:3000');
+const EXTRA_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(normalizeOrigin)
+  .filter(Boolean);
+const ALLOWED_ORIGINS = Array.from(new Set([CLIENT_URL, ...EXTRA_ORIGINS, 'http://localhost:3000', 'http://localhost:4173']));
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  const allowed = !origin || ALLOWED_ORIGINS.includes(origin) || /localhost:\d+$/.test(origin || '') || /\.vercel\.app$/.test(origin || '') || /\.onrender\.com$/.test(origin || '');
+
+  if (allowed) {
+    res.header('Access-Control-Allow-Origin', origin || '*');
+    res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,Stripe-Signature');
+    res.header('Access-Control-Allow-Credentials', 'true');
+  }
+
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
+app.use('/webhook', express.raw({ type: 'application/json' }));
+app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use(bodyParser.raw({ type: 'application/json' }));
 
-// Serve static files from public folder
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Initialize DB demo user
 db.ensureDemoUser();
 
-// Stripe and secrets
 const stripe = stripeLib(process.env.STRIPE_SECRET_KEY || 'sk_test_PLACEHOLDER');
 const JWT_SECRET = process.env.JWT_SECRET || 'demo-secret-key-change-me';
 const PRICE_ID = process.env.PRICE_ID || 'price_xxx';
 
-// S3 client (requires AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, S3_BUCKET in env)
 const S3_BUCKET = process.env.S3_BUCKET || '';
 const s3Client = new S3Client({
   region: process.env.AWS_REGION || 'us-east-1',
@@ -56,18 +65,48 @@ const s3Client = new S3Client({
   }
 });
 
-// Multer (in-memory storage)
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1024 * 1024 * 5 } }); // 5MB
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1024 * 1024 * 5 } });
 
-// Simple auth middleware (checks token + loads user from DB)
+function validateEnv() {
+  const warnings = [];
+
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'demo-secret-key-change-me') {
+    warnings.push('JWT_SECRET is not set or still using the demo secret.');
+  }
+
+  if (!process.env.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY.includes('PLACEHOLDER')) {
+    warnings.push('STRIPE_SECRET_KEY is not configured. Checkout and webhook features will fail until you add real keys.');
+  }
+
+  if (!process.env.STRIPE_WEBHOOK_SECRET || process.env.STRIPE_WEBHOOK_SECRET.includes('PLACEHOLDER')) {
+    warnings.push('STRIPE_WEBHOOK_SECRET is not configured. Stripe webhooks will not verify.');
+  }
+
+  if (!process.env.S3_BUCKET) {
+    warnings.push('S3_BUCKET is not set. Logo uploads will fail until AWS credentials and a bucket are configured.');
+  }
+
+  if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+    warnings.push('AWS credentials are not configured. Logo uploads will fail until AWS access is configured.');
+  }
+
+  if (!process.env.CLIENT_URL) {
+    warnings.push('CLIENT_URL is not set; defaulting to http://localhost:3000 for local development.');
+  }
+
+  return warnings;
+}
+
 async function requireAuth(req, res, next) {
   const auth = req.headers.authorization;
   if (!auth || !auth.startsWith('Bearer ')) return res.status(401).json({ error: 'Missing auth token' });
+
   const token = auth.slice(7);
   try {
     const payload = jwt.verify(token, JWT_SECRET);
     const user = db.getUserById(payload.userId);
     if (!user) return res.status(401).json({ error: 'Invalid user' });
+
     req.user = {
       id: user.id,
       email: user.email,
@@ -81,20 +120,27 @@ async function requireAuth(req, res, next) {
   }
 }
 
-// Routes
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    app: 'CRE Valuate Pro',
+    timestamp: new Date().toISOString(),
+    mode: process.env.NODE_ENV || 'development'
+  });
+});
 
-// Register
 app.post('/register', async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
   if (db.getUserByEmail(email)) return res.status(409).json({ error: 'User already exists' });
 
   try {
     const hashed = bcrypt.hashSync(password, 10);
     let customer = null;
-    if (process.env.STRIPE_SECRET_KEY && process.env.STRIPE_SECRET_KEY !== 'sk_test_your_real_key_here') {
+    if (process.env.STRIPE_SECRET_KEY && !process.env.STRIPE_SECRET_KEY.includes('PLACEHOLDER')) {
       customer = await stripe.customers.create({ email });
     }
+
     const user = db.createUser(email, hashed, customer ? customer.id : null);
     const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ token });
@@ -104,20 +150,20 @@ app.post('/register', async (req, res) => {
   }
 });
 
-// Demo login
 app.post('/login', (req, res) => {
-  const { email, password } = req.body;
+  const { email, password } = req.body || {};
   const user = db.getUserByEmail(email);
   if (!user) return res.status(401).json({ error: 'Invalid credentials' });
   if (!bcrypt.compareSync(password, user.password)) return res.status(401).json({ error: 'Invalid credentials' });
+
   const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
   res.json({ token });
 });
 
-// Get user
 app.get('/me', requireAuth, async (req, res) => {
   const { id, email, paid, logoKey } = req.user;
   let logoUrl = null;
+
   if (logoKey && S3_BUCKET) {
     try {
       const cmd = new GetObjectCommand({ Bucket: S3_BUCKET, Key: logoKey });
@@ -126,20 +172,20 @@ app.get('/me', requireAuth, async (req, res) => {
       console.warn('Failed to generate signed logo URL', err.message);
     }
   }
+
   res.json({ id, email, paid, logoUrl });
 });
 
-// Create Stripe Checkout Session
 app.post('/create-checkout-session', requireAuth, async (req, res) => {
   try {
     let customerId = req.user.stripeCustomerId;
-    if (!customerId && process.env.STRIPE_SECRET_KEY && process.env.STRIPE_SECRET_KEY !== 'sk_test_your_real_key_here') {
+    if (!customerId && process.env.STRIPE_SECRET_KEY && !process.env.STRIPE_SECRET_KEY.includes('PLACEHOLDER')) {
       const customer = await stripe.customers.create({ email: req.user.email });
       db.setUserStripeCustomerId(req.user.id, customer.id);
       customerId = customer.id;
     }
 
-    if (!process.env.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY === 'sk_test_your_real_key_here') {
+    if (!process.env.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY.includes('PLACEHOLDER')) {
       return res.status(400).json({ error: 'Stripe is not configured. Add Stripe keys to .env.' });
     }
 
@@ -147,10 +193,11 @@ app.post('/create-checkout-session', requireAuth, async (req, res) => {
       payment_method_types: ['card'],
       mode: 'subscription',
       line_items: [{ price: PRICE_ID, quantity: 1 }],
-      success_url: `${CLIENT_URL}?checkoutSuccess=true`,
-      cancel_url: `${CLIENT_URL}?checkoutCanceled=true`,
+      success_url: `${CLIENT_URL || 'http://localhost:3000'}?checkoutSuccess=true`,
+      cancel_url: `${CLIENT_URL || 'http://localhost:3000'}?checkoutCanceled=true`,
       client_reference_id: String(req.user.id)
     };
+
     if (customerId) sessionParams.customer = customerId;
 
     const session = await stripe.checkout.sessions.create(sessionParams);
@@ -161,13 +208,14 @@ app.post('/create-checkout-session', requireAuth, async (req, res) => {
   }
 });
 
-// Stripe webhook
 app.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_PLACEHOLDER';
   let event;
+
   try {
-    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+    const rawBody = req.body; // already raw because /webhook uses express.raw
+    event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
   } catch (err) {
     console.warn('Webhook signature verification failed:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
@@ -202,7 +250,6 @@ app.post('/webhook', async (req, res) => {
         const user = db.getUserByStripeCustomerId(customer);
         if (user) {
           db.setUserPaid(user.id, true);
-          console.log(`User ${user.id} marked as paid via invoice.payment_succeeded.`);
         }
       }
     }
@@ -216,7 +263,6 @@ app.post('/webhook', async (req, res) => {
         if (user) {
           db.setUserSubscription(user.id, subscription.id, status);
           db.setUserPaid(user.id, status === 'active' || status === 'trialing');
-          console.log(`User ${user.id} subscription updated: ${status}`);
         }
       }
     }
@@ -229,7 +275,6 @@ app.post('/webhook', async (req, res) => {
         if (user) {
           db.setUserSubscription(user.id, subscription.id, 'canceled');
           db.setUserPaid(user.id, false);
-          console.log(`User ${user.id} subscription canceled.`);
         }
       }
     }
@@ -240,7 +285,6 @@ app.post('/webhook', async (req, res) => {
   res.json({ received: true });
 });
 
-// Upload logo to S3 
 app.post('/upload-logo', requireAuth, upload.single('logo'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   if (!S3_BUCKET) return res.status(500).json({ error: 'S3_BUCKET not configured' });
@@ -253,8 +297,10 @@ app.post('/upload-logo', requireAuth, upload.single('logo'), async (req, res) =>
       Body: req.file.buffer,
       ContentType: req.file.mimetype
     });
+
     await s3Client.send(put);
     db.setUserLogoKey(req.user.id, key);
+
     const getCmd = new GetObjectCommand({ Bucket: S3_BUCKET, Key: key });
     const url = await getSignedUrl(s3Client, getCmd, { expiresIn: 60 * 60 });
     res.json({ url });
@@ -264,11 +310,10 @@ app.post('/upload-logo', requireAuth, upload.single('logo'), async (req, res) =>
   }
 });
 
-// Generate PDF
 app.get('/generate-pdf', requireAuth, async (req, res) => {
   if (!req.user.paid) return res.status(403).json({ error: 'Subscription required to export PDF' });
 
-  const logoUrl = req.user.logoKey && S3_BUCKET ? `https://${S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${req.user.logoKey}` : null;
+  const logoUrl = req.user.logoKey && S3_BUCKET ? `https://${S3_BUCKET}.s3.${process.env.AWS_REGION || 'us-east-1'}.amazonaws.com/${req.user.logoKey}` : null;
   const title = req.query.title ? String(req.query.title).slice(0, 200) : 'Investment Memo';
 
   const html = `
@@ -329,17 +374,17 @@ app.get('/generate-pdf', requireAuth, async (req, res) => {
   }
 });
 
-// Fallback to index.html
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, () => {
+const startupWarnings = validateEnv();
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server listening on port ${PORT}`);
-  if (!process.env.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY === 'sk_test_your_real_key_here') {
-    console.warn('Warning: Stripe is not configured. Add your real keys to .env to enable checkout/webhooks.');
-  }
-  if (!process.env.S3_BUCKET) {
-    console.warn('Warning: S3_BUCKET not set; uploads will fail until configured.');
+  if (startupWarnings.length) {
+    console.warn('Startup warnings:');
+    startupWarnings.forEach((warning) => console.warn(`- ${warning}`));
   }
 });
+
+module.exports = app;
